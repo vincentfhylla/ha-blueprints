@@ -45,3 +45,58 @@ Prevents movement when:
 
 ### 🗂 Status Tracking  
 Updates `input_select.window_command_mode` with:
+idle
+cooling_open
+cooling_close
+cooking_vent
+weather_close
+geo_away_close
+safety_smoke
+lockout
+
+---
+
+## 🧩 Required Helpers
+
+Create these in Home Assistant:
+input_select.window_command_mode
+input_boolean.window_cooling_enabled
+input_boolean.window_lockout_mode
+
+## 🧩 Required Groups
+group.window_openers
+group.main_floor_windows
+group.window_contacts
+group.window_faults (optional)
+group.smoke_detectors
+
+---
+
+## 🧪 Cooking Sensor Template (with Hysteresis)
+
+Add to `configuration.yaml`:
+
+```yaml
+template:
+  - binary_sensor:
+      - name: "Cooking Air Quality Trigger"
+        unique_id: cooking_air_quality_trigger
+        state: >
+          {% set pm  = states('sensor.kitchen_view_plus_pm2_5') | float(0) %}
+          {% set co2 = states('sensor.kitchen_view_plus_carbon_dioxide') | float(0) %}
+          {% set voc = states('sensor.kitchen_view_plus_volatile_organic_compounds_parts') | float(0) %}
+          {% set pm_on   = 35 %}
+          {% set pm_off  = 25 %}
+          {% set co2_on  = 950 %}
+          {% set co2_off = 800 %}
+          {% set voc_on  = 300 %}
+          {% set voc_off = 200 %}
+          {% set was_on = is_state('binary_sensor.cooking_air_quality_trigger', 'on') %}
+          {% if was_on %}
+            {{ pm > pm_off or co2 > co2_off or voc > voc_off }}
+          {% else %}
+            {{ pm > pm_on or co2 > co2_on or voc > voc_on }}
+          {% endif %}
+        device_class: smoke
+
+
