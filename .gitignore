@@ -1,0 +1,30 @@
+# Python / HA related
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
+
+# VS Code
+.vscode/
+
+# Env / Virtualenv
+env/
+venv/
+.venv/
+
+# Home Assistant
+.homeassistant/.storage/
+home-assistant_v2.db
+home-assistant.log
+home-assistant.log.*
+
+# Logs
+*.log
+*.log.*
+
+# Backup / Temporary
+*.bak
+*.tmp
+*.swp
