@@ -1,0 +1,318 @@
+blueprint:
+  name: Smart Window Master Controller (Unified)
+  description: >
+    Master controller for motorized windows (Zooz ZEN52/51 or similar).
+    Features:
+      • Natural cooling (inside vs outside temperature)
+      • AC shutdown when windows used for cooling
+      • Weather close (rain/snow)
+      • Geofence close when away
+      • Cooking ventilation (kitchen windows + fans)
+      • Smoke emergency override (open all windows)
+      • Lockout mode
+      • Contact sensor + fault sensor safety
+      • Status reporting via input_select.window_command_mode
+  domain: automation
+
+  input:
+    windows_group:
+      name: All Windows Group
+      description: Group containing ALL motorized windows (e.g. group.window_openers).
+      selector:
+        entity: {}
+
+    cooking_windows_group:
+      name: Cooking / Kitchen Windows Group
+      description: Group used for cooking ventilation (e.g. group.main_floor_windows).
+      selector:
+        entity: {}
+
+    indoor_temp_sensor:
+      name: Indoor Temperature Sensor
+      selector:
+        entity:
+          domain: sensor
+
+    outdoor_temp_sensor:
+      name: Outdoor Temperature Sensor
+      selector:
+        entity:
+          domain: sensor
+
+    cooling_delta:
+      name: Temperature Difference Needed for Cooling
+      description: "Minimum difference (inside - outside) before using windows."
+      default: 2
+      selector:
+        number:
+          min: 0.5
+          max: 10
+          step: 0.5
+          mode: slider
+
+    weather_entity:
+      name: Weather / Rain Sensor
+      description: "Entity whose state text includes 'rain' or 'snow' when bad weather is present."
+      selector:
+        entity: {}
+
+    smoke_entity:
+      name: Smoke / CO Sensor or Group
+      selector:
+        entity:
+          domain: binary_sensor
+
+    cooking_sensor:
+      name: Cooking Trigger (PM2.5 / VOC / CO₂ binary_sensor)
+      description: "Use binary_sensor.cooking_air_quality_trigger here."
+      selector:
+        entity:
+          domain: binary_sensor
+
+    contacts_entity:
+      name: Window Contact Sensors Group
+      selector:
+        entity: {}
+
+    faults_group:
+      name: Window Fault Group
+      selector:
+        entity: {}
+
+    command_mode_select:
+      name: Window Command Mode (input_select)
+      selector:
+        entity:
+          domain: input_select
+
+    cooling_enabled_toggle:
+      name: Cooling Enabled (input_boolean)
+      selector:
+        entity:
+          domain: input_boolean
+
+    lockout_toggle:
+      name: Lockout Mode (input_boolean)
+      selector:
+        entity:
+          domain: input_boolean
+
+    presence_entity:
+      name: Presence Entity (home/away)
+      selector:
+        entity: {}
+
+    climate_entity:
+      name: AC / Climate Entity
+      selector:
+        entity:
+          domain: climate
+
+    fan_entity:
+      name: Fan Entity (optional)
+      selector:
+        entity: {}
+
+mode: restart
+max_exceeded: silent
+
+trigger:
+  - platform: time_pattern
+    minutes: "/5"
+
+  - platform: state
+    entity_id: !input smoke_entity
+
+  - platform: state
+    entity_id: !input cooking_sensor
+
+  - platform: state
+    entity_id: !input presence_entity
+
+  - platform: state
+    entity_id: !input weather_entity
+
+  - platform: state
+    entity_id: !input contacts_entity
+
+  - platform: state
+    entity_id: !input lockout_toggle
+
+  - platform: state
+    entity_id: !input cooling_enabled_toggle
+
+condition: []
+
+action:
+  - variables:
+      windows: !input windows_group
+      cooking_windows: !input cooking_windows_group
+      indoor_entity: !input indoor_temp_sensor
+      outdoor_entity: !input outdoor_temp_sensor
+      weather_ent: !input weather_entity
+      smoke_ent: !input smoke_entity
+      cooking_ent: !input cooking_sensor
+      contacts_ent: !input contacts_entity
+      faults_ent: !input faults_group
+      cmd_select: !input command_mode_select
+      cooling_toggle_ent: !input cooling_enabled_toggle
+      lockout_ent: !input lockout_toggle
+      presence_ent: !input presence_entity
+      climate_ent: !input climate_entity
+      fan_ent: !input fan_entity
+      delta: !input cooling_delta
+
+      inside_temp: "{{ states(indoor_entity) | float(0) }}"
+      outside_temp: "{{ states(outdoor_entity) | float(0) }}"
+      temp_diff: "{{ inside_temp - outside_temp }}"
+
+      weather_state: "{{ (states(weather_ent) or '') | lower }}"
+      smoke_on: "{{ is_state(smoke_ent, 'on') }}"
+      cooking_on: "{{ is_state(cooking_ent, 'on') }}"
+      contacts_blocked: "{{ is_state(contacts_ent, 'on') }}"
+      faults_active: "{{ is_state(faults_ent, 'on') }}"
+      cooling_enabled: "{{ is_state(cooling_toggle_ent, 'on') }}"
+      lockout_on: "{{ is_state(lockout_ent, 'on') }}"
+      presence_state: "{{ states(presence_ent) | lower }}"
+      is_home: "{{ presence_state in ['home','on','open'] }}"
+      is_away: "{{ presence_state in ['not_home','off','closed'] }}"
+      is_rain_or_snow: "{{ 'rain' in weather_state or 'snow' in weather_state }}"
+
+  # 1 — SMOKE EMERGENCY
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ smoke_on }}"
+        sequence:
+          - service: input_select.select_option
+            data:
+              entity_id: !input command_mode_select
+              option: "safety_smoke"
+          - service: cover.open_cover
+            target:
+              entity_id: !input windows_group
+          - service: climate.turn_off
+            target:
+              entity_id: !input climate_entity
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ fan_ent is not none and fan_ent != '' }}"
+                sequence:
+                  - service: fan.turn_off
+                    target:
+                      entity_id: "{{ fan_ent }}"
+          - stop: "Smoke override active"
+
+  # 2 — LOCKOUT / CONTACT BLOCK / FAULTS
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ lockout_on or contacts_blocked or faults_active }}"
+        sequence:
+          - service: input_select.select_option
+            data:
+              entity_id: !input command_mode_select
+              option: "lockout"
+          - stop: "Blocked by lockout/fault/contact"
+
+  # 3 — WEATHER CLOSE
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ is_rain_or_snow }}"
+        sequence:
+          - service: input_select.select_option
+            data:
+              entity_id: !input command_mode_select
+              option: "weather_close"
+          - service: cover.close_cover
+            target:
+              entity_id: !input windows_group
+          - stop: "Weather close active"
+
+  # 4 — AWAY CLOSE
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ is_away }}"
+        sequence:
+          - service: input_select.select_option
+            data:
+              entity_id: !input command_mode_select
+              option: "geo_away_close"
+          - service: cover.close_cover
+            target:
+              entity_id: !input windows_group
+          - stop: "Away close active"
+
+  # 5 — COOKING MODE
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ cooking_on }}"
+        sequence:
+          - service: input_select.select_option
+            data:
+              entity_id: !input command_mode_select
+              option: "cooking_vent"
+          - service: cover.set_cover_position
+            data:
+              position: 30
+            target:
+              entity_id: !input cooking_windows_group
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ fan_ent is not none and fan_ent != '' }}"
+                sequence:
+                  - service: fan.turn_on
+                    target:
+                      entity_id: "{{ fan_ent }}"
+          - service: climate.turn_off
+            target:
+              entity_id: !input climate_entity
+          - stop: "Cooking vent active"
+
+  # 6 — COOLING OPEN
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ cooling_enabled }}"
+          - condition: template
+            value_template: "{{ temp_diff > delta }}"
+        sequence:
+          - service: input_select.select_option
+            data:
+              entity_id: !input command_mode_select
+              option: "cooling_open"
+          - service: cover.open_cover
+            target:
+              entity_id: !input windows_group
+          - service: climate.turn_off
+            target:
+              entity_id: !input climate_entity
+          - stop: "Cooling open active"
+
+  # 7 — COOLING CLOSE
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ cooling_enabled }}"
+          - condition: template
+            value_template: "{{ temp_diff <= 0 }}"
+        sequence:
+          - service: input_select.select_option
+            data:
+              entity_id: !input command_mode_select
+              option: "cooling_close"
+          - service: cover.close_cover
+            target:
+              entity_id: !input windows_group
+          - stop: "Cooling close active"
+
+  # 8 — DEFAULT
+  - service: input_select.select_option
+    data:
+      entity_id: !input command_mode_select
+      option: "idle"
